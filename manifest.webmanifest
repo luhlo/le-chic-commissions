@@ -1,14 +1,14 @@
 {
   "name": "Le Chic Commissions",
   "short_name": "Commissions",
-  "start_url": "/le-chic-commissions/",
-  "scope": "/le-chic-commissions/",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#f4f6f7",
   "theme_color": "#123c39",
   "icons": [
     {
-      "src": "/le-chic-commissions/icon.svg",
+      "src": "/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"
