@@ -30,11 +30,12 @@ export function Analytics({ designs }: Props) {
   const initial = quickRange("90");
   const [start, setStart] = useState(initial.start); const [end, setEnd] = useState(initial.end);
   const [grouping, setGrouping] = useState<AnalyticsGrouping>("weekly");
-  const [metric, setMetric] = useState<AnalyticsMetric>("commission");
+  const [metric, setMetric] = useState<AnalyticsMetric>("units");
   const [compareBy, setCompareBy] = useState<"recipients" | "styles">("recipients");
   const [selected, setSelected] = useState<string[]>([]);
   const [mixMetric, setMixMetric] = useState<AnalyticsMetric>("commission");
   const [styleRecipient, setStyleRecipient] = useState("all");
+  const [styleMetric, setStyleMetric] = useState<AnalyticsMetric>("units");
   const [moverMetric, setMoverMetric] = useState<"units" | "sales">("units");
   const [moverRecipient, setMoverRecipient] = useState("all");
   const [report, setReport] = useState<AnalyticsResult | null>(null);
@@ -73,7 +74,7 @@ export function Analytics({ designs }: Props) {
         current.units += row.units; current.sales += row.sales; current.commission += row.commission; map[row.id] = current; return map;
       }, {})
     : Object.fromEntries((report?.stylesByRecipient[styleRecipient] ?? []).map(row => [row.id, row]));
-  const styleRows = Object.values(styles).sort((a, b) => b[metric] - a[metric]).slice(0, 12);
+  const styleRows = Object.values(styles).sort((a, b) => b[styleMetric] - a[styleMetric]).slice(0, 12);
   const prior = previousEqualRange(start, end);
   const coverageComplete = periodReady(coverage);
 
@@ -116,8 +117,8 @@ export function Analytics({ designs }: Props) {
         <section className="panel"><div className="section-title"><div><span className="eyebrow">RECIPIENT MIX</span><h2>Share of performance</h2></div><select value={mixMetric} onChange={e => setMixMetric(e.target.value as AnalyticsMetric)}><option value="units">Units</option><option value="sales">Sales</option><option value="commission">Commission</option></select></div>
           {report.recipientMix.some(row => row[mixMetric] > 0) ? <div className="chart-frame compact-chart"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={report.recipientMix.filter(row => row[mixMetric] > 0)} dataKey={mixMetric} nameKey="name" innerRadius={55} outerRadius={90}>{report.recipientMix.map((row,index) => <Cell key={row.id} fill={colors[index % colors.length]} />)}</Pie><Tooltip formatter={value => mixMetric === "units" ? number(Number(value)) : money(Number(value))} /><Legend /></PieChart></ResponsiveContainer></div> : <div className="empty">No recipient activity in this period.</div>}
         </section>
-        <section className="panel"><div className="section-title"><div><span className="eyebrow">STYLE PERFORMANCE</span><h2>Styles by recipient</h2></div><select value={styleRecipient} onChange={e => setStyleRecipient(e.target.value)}><option value="all">All recipients</option>{recipients.map(r => <option value={r.id} key={r.id}>{r.name}</option>)}</select></div>
-          {styleRows.length ? <div className="chart-frame compact-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={styleRows} layout="vertical" margin={{ left: 10 }}><CartesianGrid strokeDasharray="3 3" /><XAxis type="number" tickFormatter={metric === "units" ? number : value => `$${number(value)}`} /><YAxis type="category" dataKey="name" width={115} /><Tooltip formatter={value => metric === "units" ? number(Number(value)) : money(Number(value))} /><Bar dataKey={metric} fill="#164c46" /></BarChart></ResponsiveContainer></div> : <div className="empty">No styles are attributed to this recipient in the selected period.</div>}
+        <section className="panel"><div className="section-title"><div><span className="eyebrow">STYLE PERFORMANCE</span><h2>Styles by recipient</h2></div><div className="chart-switches"><select aria-label="Style recipient" value={styleRecipient} onChange={e => setStyleRecipient(e.target.value)}><option value="all">All recipients</option>{recipients.map(r => <option value={r.id} key={r.id}>{r.name}</option>)}</select><select aria-label="Style metric" value={styleMetric} onChange={e => setStyleMetric(e.target.value as AnalyticsMetric)}><option value="units">Units</option><option value="sales">Sales</option><option value="commission">Commission</option></select></div></div>
+          {styleRows.length ? <div className="chart-frame compact-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={styleRows} layout="vertical" margin={{ left: 10 }}><CartesianGrid strokeDasharray="3 3" /><XAxis type="number" tickFormatter={styleMetric === "units" ? number : value => `$${number(value)}`} /><YAxis type="category" dataKey="name" width={115} /><Tooltip formatter={value => styleMetric === "units" ? number(Number(value)) : money(Number(value))} /><Bar dataKey={styleMetric} fill="#164c46" /></BarChart></ResponsiveContainer></div> : <div className="empty">No styles are attributed to this recipient in the selected period.</div>}
         </section>
       </div>
       <section className="panel"><div className="section-title"><div><span className="eyebrow">TOP MOVERS</span><h2>Growth and decline</h2></div><div className="chart-switches"><select value={moverMetric} onChange={e => setMoverMetric(e.target.value as "units" | "sales")}><option value="units">Units</option><option value="sales">Sales</option></select><select value={moverRecipient} onChange={e => setMoverRecipient(e.target.value)}><option value="all">All recipients</option>{recipients.map(r => <option value={r.id} key={r.id}>{r.name}</option>)}</select></div></div>
@@ -130,5 +131,6 @@ export function Analytics({ designs }: Props) {
 }
 
 function MoverList({ title, rows, metric }: { title: string; rows: AnalyticsResult["growth"]; metric: "units" | "sales" }) {
-  return <div><h3>{title}</h3>{rows.length ? rows.map(row => <div className="mover-row" key={row.id}><div><strong>{row.name}</strong><small>{metric === "units" ? `${number(row.current)} units` : money(row.current)}</small></div><b className={row.current >= row.previous ? "positive" : "negative"}>{row.isNew ? "New" : `${row.change! >= 0 ? "+" : ""}${row.change!.toFixed(1)}%`}</b></div>) : <div className="empty">No qualifying {title.toLowerCase()} styles.</div>}</div>;
+  const value = (amount: number) => metric === "units" ? `${number(amount)} units` : money(amount);
+  return <div><h3>{title}</h3>{rows.length ? rows.map(row => <div className="mover-row" key={row.id}><div><strong>{row.name}</strong><small>{value(row.current)} vs {value(row.previous)}</small></div><b className={row.current >= row.previous ? "positive" : "negative"}>{row.isNew ? "New" : `${row.change! >= 0 ? "+" : ""}${row.change!.toFixed(1)}%`}</b></div>) : <div className="empty">No qualifying {title.toLowerCase()} styles.</div>}</div>;
 }
