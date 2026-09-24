@@ -1,15 +1,16 @@
 // Cache only public app assets. Never intercept Supabase/API requests or store business data.
-const CACHE = "le-chic-shell-v2";
+const CACHE = "le-chic-shell-v3";
 const BASE = new URL("./", self.location.href).pathname;
-self.addEventListener("install", (event) =>
+self.addEventListener("install", (event) => {
+  self.skipWaiting();
   event.waitUntil(
     caches
       .open(CACHE)
       .then((cache) =>
         cache.addAll([BASE, `${BASE}icon.svg`, `${BASE}manifest.webmanifest`]),
       ),
-  ),
-);
+  );
+});
 self.addEventListener("activate", (event) =>
   event.waitUntil(
     caches
@@ -20,7 +21,8 @@ self.addEventListener("activate", (event) =>
             .filter((k) => k.startsWith("le-chic-shell-") && k !== CACHE)
             .map((k) => caches.delete(k)),
         ),
-      ),
+      )
+      .then(() => self.clients.claim()),
   ),
 );
 self.addEventListener("fetch", (event) => {
