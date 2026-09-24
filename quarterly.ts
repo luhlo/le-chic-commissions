@@ -127,6 +127,19 @@ type ItemRow = {
   skus: { sku: string; design_id: string } | null;
 };
 
+type AnalyticsItemRow = Omit<ItemRow, "order_revisions" | "skus"> & {
+  order_id: string;
+  order_number: string;
+  business_date: string;
+  currency: string;
+  source: string | null;
+  referral: string | null;
+  market: "retail" | "wholesale";
+  cancelled: boolean;
+  account_id: string;
+  channel_id: Line["channel"];
+};
+
 const D = Decimal.clone({ precision: 40, rounding: Decimal.ROUND_HALF_UP });
 const asMoney = (value: Decimal.Value) => new D(value).toFixed(2);
 const scalar = (value: string | number | null) =>
@@ -341,6 +354,21 @@ async function loadItems(startsOn: string, endsOn: string): Promise<ItemRow[]> {
   return rows;
 }
 
+async function loadAnalyticsItems(startsOn: string, endsOn: string): Promise<AnalyticsItemRow[]> {
+  const rows: AnalyticsItemRow[] = [];
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await client()
+      .rpc("analytics_period_lines", { p_start: startsOn, p_end: endsOn })
+      .range(from, from + pageSize - 1);
+    if (error) throw new Error(error.message);
+    const page = (data ?? []) as AnalyticsItemRow[];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return rows;
+}
+
 export interface PeriodInputs {
   recipients: CloudRecipient[];
   rules: Rule[];
@@ -359,7 +387,7 @@ export async function loadPeriodInputs(startsOn: string, endsOn: string): Promis
       client().from("recipients").select("id,name,active,starts_on,ends_on,notes,created_at").order("name"),
       client().from("rule_sets").select("id,recipient_id,name,rule_versions(version,effective_start,effective_end,priority,active,currency,kind,rate,refund_policy,deductions,conditions,notes,manual_shipping,manual_other_costs)").is("deleted_at", null),
       loadProductResolutions(),
-      loadItems(startsOn, endsOn),
+      loadAnalyticsItems(startsOn, endsOn),
     ]);
   if (recipientError) throw new Error(recipientError.message);
   if (ruleError) throw new Error(ruleError.message);
@@ -380,40 +408,24 @@ export async function loadPeriodInputs(startsOn: string, endsOn: string): Promis
       conditions: version.conditions, refundPolicy: version.refund_policy, notes: version.notes,
     })),
   );
-  const newestRevision = new Map<string, string>();
-  const revisionDates = new Map<string, string>();
-  for (const row of itemRows) {
-    const revision = relation(row.order_revisions);
-    const previous = revisionDates.get(revision.order_id);
-    if (!previous || revision.created_at > previous) {
-      revisionDates.set(revision.order_id, revision.created_at);
-      newestRevision.set(revision.order_id, revision.id);
-    }
-  }
-  const lines: Line[] = itemRows.filter(row => {
-    const revision = relation(row.order_revisions);
-    return newestRevision.get(revision.order_id) === revision.id;
-  }).map(row => {
-    const revision = relation(row.order_revisions);
-    const order = relation(revision.orders);
-    const account = relation(order.channel_accounts);
+  const lines: Line[] = itemRows.map(row => {
     const mappingKey = row.external_product_key || row.source_sku || `unidentified-line:${row.id}`;
-    const resolved = mappings.get(`${order.account_id}:${mappingKey}`);
+    const resolved = mappings.get(`${row.account_id}:${mappingKey}`);
     const sku = resolved?.resolved_sku_id ? { sku: resolved.internal_sku, design_id: resolved.design_id } : null;
     return {
-      id: row.id, externalOrderId: revision.order_number, orderKey: revision.order_id,
+      id: row.id, externalOrderId: row.order_number, orderKey: row.order_id,
       externalLineId: row.external_line_id, productName: row.product_name,
       sourceSku: row.source_sku, externalProductKey: row.external_product_key,
-      channel: account.channel_id, date: revision.business_date, currency: revision.currency,
-      sku: sku?.sku ?? null, designId: sku?.design_id ?? null, source: revision.source,
-      referral: revision.referral, market: revision.market, quantity: row.quantity,
+      channel: row.channel_id, date: row.business_date, currency: row.currency,
+      sku: sku?.sku ?? null, designId: sku?.design_id ?? null, source: row.source,
+      referral: row.referral, market: row.market, quantity: row.quantity,
       refundedQuantity: row.refunded_quantity, unitPrice: String(row.unit_price),
       costs: {
         discounts: scalar(row.discounts) ?? "0.00", refunds: scalar(row.refunds) ?? "0.00",
         shipping: scalar(row.shipping), platformFees: scalar(row.platform_fees),
         platformCommissions: scalar(row.platform_commissions), otherCosts: scalar(row.other_costs),
       },
-      cancelled: revision.cancelled,
+      cancelled: row.cancelled,
     };
   });
   return { recipients, rules, lines };
