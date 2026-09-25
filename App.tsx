@@ -49,7 +49,15 @@ import {
   loadQuarterlyReport,
   quarterRange,
   type QuarterlyReport,
+  type QuarterlyRecipient,
 } from "./quarterly";
+import {
+  buildRecipientStatement,
+  selectedStatementDeductions,
+  statementDate,
+  type RecipientStatementModel,
+} from "./statements";
+import { downloadRecipientStatementPdf } from "./statementPdf";
 const Analytics = lazy(() => import('./AnalyticsPage').then(module => ({default: module.Analytics})));
 const pages = [
   "Overview",
@@ -115,6 +123,94 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 }
 function Badge({ children }: { children: ReactNode }) {
   return <span className="badge">{children}</span>;
+}
+
+function RecipientStatementView({
+  model,
+  onClose,
+  onDownload,
+  downloading,
+}: {
+  model: RecipientStatementModel;
+  onClose: () => void;
+  onDownload: () => void;
+  downloading: boolean;
+}) {
+  return (
+    <section className="recipient-statement-view" aria-label={`${model.recipientName} commission statement`}>
+      <div className="statement-view-actions no-print">
+        <button className="secondary" onClick={onClose}>Back to all recipients</button>
+        <button onClick={onDownload} disabled={downloading}>{downloading ? "Creating PDF…" : "Download PDF"}</button>
+      </div>
+      <div className="statement-letterhead">
+        <div><strong>LE CHIC MIAMI</strong><span>COMMISSION STATEMENT</span></div>
+        <Badge>{model.status === "FINAL" ? "Final statement" : "Provisional"}</Badge>
+      </div>
+      <div className="statement-identity">
+        <span><b>Recipient</b>{model.recipientName}</span>
+        <span><b>Period</b>Q{model.quarter} {model.year}</span>
+        <span><b>Dates</b>{statementDate(model.startsOn, true)} – {statementDate(model.endsOn, true)}</span>
+        <span><b>Status</b>{model.status === "FINAL" ? "FINAL STATEMENT" : "PROVISIONAL"}</span>
+      </div>
+      {model.status === "PROVISIONAL" && (
+        <div className="statement-provisional">
+          <strong>Synced through: {model.syncedThrough ? statementDate(model.syncedThrough) : "Coverage not yet verified"}</strong>
+          <span>This statement may change until the quarter is finalized.</span>
+        </div>
+      )}
+      <div className="statement-hero-total"><span>TOTAL COMMISSION</span><strong>{money(model.commission)}</strong></div>
+      <div className="statement-summary-grid">
+        <span><b>Commission units</b><strong>{model.units}</strong></span>
+        <span><b>Commissionable revenue</b><strong>{money(model.commissionableRevenue)}</strong></span>
+        <span><b>Commission total</b><strong>{money(model.commission)}</strong></span>
+      </div>
+      <section className="statement-section">
+        <h3>STYLE SUMMARY</h3>
+        {model.styles.length ? (
+          <div className="table-wrap statement-style-table"><table><thead><tr><th>Style</th><th>Units</th><th>Commissionable Revenue</th><th>Commission</th></tr></thead><tbody>
+            {model.styles.map((style) => <tr key={style.id}><td>{style.name}</td><td>{style.units}</td><td>{money(style.commissionableRevenue)}</td><td><strong>{money(style.commission)}</strong></td></tr>)}
+          </tbody></table></div>
+        ) : <p className="muted">No commission-eligible sales were recorded for this recipient during this period.</p>}
+      </section>
+      <section className="statement-section">
+        <h3>ORDER DETAILS</h3>
+        {model.calculations.map((calculation) => (
+          <details className="calculation statement-order" key={`${calculation.lineId}-${calculation.recipientId}`}>
+            <summary><span><strong>{calculation.lineSnapshot.productName ?? calculation.lineSnapshot.sku ?? "Imported item"}</strong><small>{statementDate(calculation.lineSnapshot.date)} · {platformLabel(calculation.lineSnapshot.channel)} · Order {calculation.lineSnapshot.externalOrderId}</small></span><strong>{money(calculation.commission)}</strong></summary>
+            <div className="audit-grid">
+              <span>Date</span><b>{statementDate(calculation.lineSnapshot.date)}</b>
+              <span>Order number</span><b>{calculation.lineSnapshot.externalOrderId}</b>
+              <span>Platform</span><b>{platformLabel(calculation.lineSnapshot.channel)}</b>
+              <span>Product</span><b>{calculation.lineSnapshot.productName ?? "Imported item"}</b>
+              <span>SKU</span><b>{calculation.lineSnapshot.sku ?? "No SKU"}</b>
+              <span>Units</span><b>{calculation.units}</b>
+              <span>Gross item sales</span><b>{money(calculation.gross)}</b>
+              {calculation.lineSnapshot.refundedQuantity > 0 && <>
+                <span>Original quantity</span><b>{calculation.lineSnapshot.quantity}</b>
+                <span>Refunded quantity</span><b>{calculation.lineSnapshot.refundedQuantity}</b>
+                <span>Commission units</span><b>{calculation.units}</b>
+              </>}
+              {selectedStatementDeductions(calculation).map((deduction) => (
+                <span className="audit-deduction" key={deduction.key}><span>− {deduction.label}</span><b>{deduction.value == null ? "Needs review" : money(deduction.value)}</b></span>
+              ))}
+              {calculation.manualDeductions && <>
+                <span>− Manual shipping share</span><b>{money(calculation.manualDeductions.shipping)}</b>
+                <span>− Manual other-cost share</span><b>{money(calculation.manualDeductions.otherCosts)}</b>
+              </>}
+              <span>Total deductions</span><b>−{money(calculation.deducted)}</b>
+              <span>Commissionable revenue</span><b>{money(calculation.basis)}</b>
+              <span>Rate</span><b>{calculation.ruleSnapshot.kind === "fixed" ? `${money(calculation.ruleSnapshot.rate)} per unit` : `${calculation.ruleSnapshot.rate}%`}</b>
+              <span>Commission</span><b>{money(calculation.commission)}</b>
+              <span>Rule</span><b>{calculation.ruleSnapshot.name} · version {calculation.ruleSnapshot.version}</b>
+              <span>Calculation</span><b>{calculationFormula(calculation)}</b>
+            </div>
+          </details>
+        ))}
+        {!model.calculations.length && <p className="muted">No commission-eligible sales were recorded for this recipient during this period.</p>}
+      </section>
+      <div className="statement-final-total"><span>TOTAL COMMISSION</span><strong>{money(model.commission)}</strong></div>
+    </section>
+  );
 }
 function LoginScreen({
   message,
@@ -256,6 +352,8 @@ export default function App() {
     useState<QuarterlyReport | null>(null);
   const [quarterlyLoading, setQuarterlyLoading] = useState(false);
   const [quarterlyError, setQuarterlyError] = useState("");
+  const [statementRecipientId, setStatementRecipientId] = useState<string | null>(null);
+  const [statementPdfBusy, setStatementPdfBusy] = useState<string | null>(null);
   const [reviewRecipientId, setReviewRecipientId] = useState<string | null>(null);
   const [overviewRecipientId, setOverviewRecipientId] = useState<string | null>(null);
   useEffect(() => {
@@ -307,9 +405,12 @@ export default function App() {
       void refreshConnections();
   }, [adminStatus, page]);
   useEffect(() => {
-    if (adminStatus === "authorized" && page === "Overview")
+    if (adminStatus === "authorized" && (page === "Overview" || page === "Statements"))
       void refreshQuarterlyReport();
   }, [adminStatus, page, reportYear, reportQuarter]);
+  useEffect(() => {
+    setStatementRecipientId(null);
+  }, [reportYear, reportQuarter]);
 
   async function refreshQuarterlyReport() {
     setQuarterlyLoading(true);
@@ -321,6 +422,23 @@ export default function App() {
       setQuarterlyError((error as Error).message);
     } finally {
       setQuarterlyLoading(false);
+    }
+  }
+
+  function statementFor(recipient: QuarterlyRecipient) {
+    if (!quarterlyReport) throw new Error("The quarterly report is not ready.");
+    return buildRecipientStatement(recipient, quarterlyReport, cloudDesigns);
+  }
+
+  async function downloadStatement(recipient: QuarterlyRecipient) {
+    setStatementPdfBusy(recipient.id);
+    try {
+      await downloadRecipientStatementPdf(statementFor(recipient));
+      setNotice(`${recipient.name}'s statement PDF was downloaded.`);
+    } catch (error) {
+      setNotice((error as Error).message);
+    } finally {
+      setStatementPdfBusy(null);
     }
   }
 
@@ -535,6 +653,16 @@ export default function App() {
   );
   const commissionTotal = total(calculations.map((c) => c.commission));
   const filteredCommission = total(filtered.map((c) => c.commission));
+  const selectedStatementRecipient = quarterlyReport?.recipients.find((recipient) => recipient.id === statementRecipientId) ?? null;
+  let selectedStatementModel: RecipientStatementModel | null = null;
+  let selectedStatementError = "";
+  if (selectedStatementRecipient && quarterlyReport) {
+    try {
+      selectedStatementModel = buildRecipientStatement(selectedStatementRecipient, quarterlyReport, cloudDesigns);
+    } catch (error) {
+      selectedStatementError = (error as Error).message;
+    }
+  }
   const recipientName = (id: string) =>
     frozen
       ? (period.recipientNames[id] ?? id)
@@ -2559,9 +2687,9 @@ export default function App() {
               <div className="section-title">
                 <div>
                   <div className="eyebrow">LE CHIC MIAMI · COMMISSIONS</div>
-                  <h2>All recipients · Q{reportQuarter} {reportYear}</h2>
+                  <h2>{selectedStatementRecipient ? selectedStatementRecipient.name : "All recipients"} · Q{reportQuarter} {reportYear}</h2>
                 </div>
-                <Badge>Live</Badge>
+                <Badge>{quarterlyReport?.finalization?.status === "finalized" ? "Final" : "Provisional"}</Badge>
               </div>
               {(quarterlyReport?.blockedLines ?? 0) > 0 && (
                 <div className="warning">
@@ -2572,65 +2700,34 @@ export default function App() {
                 <span>Total commissions</span>
                 <strong>{quarterlyReport?.amountsAvailable ? money(quarterlyReport.commissionTotal) : "Awaiting sync"}</strong>
               </div>
-              {quarterlyReport?.recipients.map((recipient) => (
-                <details className="recipient-statement" key={recipient.id}>
-                  <summary className="summary-row">
+              {!statementRecipientId && quarterlyReport?.recipients.map((recipient) => (
+                <article className="recipient-statement-card" key={recipient.id}>
+                  <div className="summary-row">
                     <div className="avatar">{recipient.name.slice(0, 1).toUpperCase()}</div>
                     <div className="grow">
                       <strong>{recipient.name}</strong>
                       <small>
-                        {recipient.eligibleLines} eligible order line{recipient.eligibleLines === 1 ? "" : "s"}
+                        {recipient.calculations.reduce((sum, calculation) => sum + calculation.units, 0)} commission unit{recipient.calculations.reduce((sum, calculation) => sum + calculation.units, 0) === 1 ? "" : "s"}
                         {recipient.blockedLines ? ` · ${recipient.blockedLines} need review` : ""}
                       </small>
                     </div>
                     <strong>{quarterlyReport?.amountsAvailable ? money(recipient.commission) : 'Awaiting sync'}</strong>
-                  </summary>
-                  <div className="recipient-statement-body">
-                    <div className="statement-meta">
-                      <span><b>Recipient</b>{recipient.name}</span>
-                      <span><b>Period</b>Q{reportQuarter} {reportYear}</span>
-                      <span><b>Dates</b>{quarterlyReport.startsOn} through {quarterlyReport.endsOn}</span>
-                      <span><b>Total</b>{quarterlyReport?.amountsAvailable ? money(recipient.commission) : 'Awaiting sync'}</span>
-                    </div>
-                    {recipient.calculations.map((calculation) => (
-                      <details className="calculation" key={`${calculation.lineId}-${calculation.recipientId}`}>
-                        <summary>
-                          <span>
-                            <strong>{calculation.lineSnapshot.productName ?? calculation.lineSnapshot.sku ?? "Imported item"}</strong>
-                            <small>
-                              {calculation.lineSnapshot.date} · {calculation.lineSnapshot.externalOrderId} · {platformLabel(calculation.lineSnapshot.channel)} · SKU {calculation.lineSnapshot.sku ?? "not supplied"}
-                            </small>
-                          </span>
-                          <strong>{money(calculation.commission)}</strong>
-                        </summary>
-                        <div className="audit-grid">
-                          <span>Date</span><b>{calculation.lineSnapshot.date}</b>
-                          <span>Platform</span><b>{platformLabel(calculation.lineSnapshot.channel)}</b>
-                          <span>Order</span><b>{calculation.lineSnapshot.externalOrderId}</b>
-                          <span>Item / SKU</span><b>{calculation.lineSnapshot.productName ?? "Imported item"} · {calculation.lineSnapshot.sku ?? "No SKU"}</b>
-                          <span>Quantity × item price</span><b>{calculation.lineSnapshot.quantity} × {money(calculation.lineSnapshot.unitPrice)}</b>
-                          <span>Gross item sales</span><b>{money(calculation.gross)}</b>
-                          {calculation.ruleSnapshot.deductions.map((key) => (
-                            <span className="audit-deduction" key={key}>
-                              <span>− {costLabel[key]}</span>
-                              <b>{calculation.lineSnapshot.costs[key] == null ? "Needs review" : money(calculation.lineSnapshot.costs[key]!)}</b>
-                            </span>
-                          ))}
-                          {calculation.manualDeductions && <>
-                            <span>− Manual shipping share</span><b>{money(calculation.manualDeductions.shipping)}</b>
-                            <span>− Manual other-cost share</span><b>{money(calculation.manualDeductions.otherCosts)}</b>
-                          </>}
-                          <span>Total deductions</span><b>−{money(calculation.deducted)}</b>
-                          <span>Commissionable amount</span><b>{money(calculation.basis)}</b>
-                          <span>Rule</span><b>{calculation.ruleSnapshot.name} · version {calculation.ruleSnapshot.version}</b>
-                          <span>Calculation</span><b>{calculationFormula(calculation)}</b>
-                        </div>
-                      </details>
-                    ))}
-                    {!recipient.calculations.length && <p className="muted">No eligible sales for this recipient in this quarter.</p>}
                   </div>
-                </details>
+                  <div className="recipient-statement-actions no-print">
+                    <button className="secondary" disabled={!quarterlyReport?.amountsAvailable} onClick={() => setStatementRecipientId(recipient.id)}>View statement</button>
+                    <button disabled={!quarterlyReport?.amountsAvailable || statementPdfBusy === recipient.id} onClick={() => void downloadStatement(recipient)}>{statementPdfBusy === recipient.id ? "Creating PDF…" : "Download PDF"}</button>
+                  </div>
+                </article>
               ))}
+              {selectedStatementError && <div className="warning">{selectedStatementError}</div>}
+              {selectedStatementModel && selectedStatementRecipient && (
+                <RecipientStatementView
+                  model={selectedStatementModel}
+                  onClose={() => setStatementRecipientId(null)}
+                  onDownload={() => void downloadStatement(selectedStatementRecipient)}
+                  downloading={statementPdfBusy === selectedStatementRecipient.id}
+                />
+              )}
               {!quarterlyLoading && quarterlyReport?.recipients.length === 0 && (
                 <p className="empty">No recipients are active in this quarter.</p>
               )}
@@ -2672,7 +2769,6 @@ export default function App() {
                 >
                   Export CSV
                 </button>
-                <button className="secondary" disabled={!quarterlyReport?.coverageComplete} onClick={() => window.print()}>Print / Save as PDF</button>
               </div>
             </section>
           </>

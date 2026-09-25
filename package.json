@@ -11,6 +11,7 @@
   "dependencies": {
     "@supabase/supabase-js": "2.116.0",
     "decimal.js": "10.6.0",
+    "jspdf": "^4.2.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "recharts": "3.10.1"
