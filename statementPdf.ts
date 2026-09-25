@@ -16,6 +16,7 @@ export interface PdfOrderBlock {
 }
 
 export function buildStatementPdfContent(model: RecipientStatementModel) {
+  const payment = model.payment ?? { status: "Not approved", paid: "0.00", remaining: model.commission, paidDate: null, method: null, reference: null };
   return {
     title: "COMMISSION STATEMENT",
     filename: statementFilename(model),
@@ -26,6 +27,13 @@ export function buildStatementPdfContent(model: RecipientStatementModel) {
       money(style.commission),
     ]),
     orders: model.calculations.map(calculationPdfBlock),
+    payment: [
+      `Payment status: ${payment.status}`,
+      ...(payment.status === "Partially paid" || payment.status === "Paid" ? [`Paid: ${money(payment.paid)}`, `Remaining: ${money(payment.remaining)}`] : []),
+      ...(payment.paidDate ? [`Paid date: ${statementDate(payment.paidDate)}`] : []),
+      ...(payment.method ? [`Method: ${payment.method}`] : []),
+      ...(payment.reference ? [`Reference: ${payment.reference}`] : []),
+    ],
   };
 }
 
@@ -101,6 +109,12 @@ export async function downloadRecipientStatementPdf(model: RecipientStatementMod
   row("TOTAL COMMISSION", money(model.commission), true);
   y += 8; divider();
 
+  heading("PAYMENT STATUS");
+  for (const line of content.payment) {
+    ensure(16); doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(50, 70, 67); doc.text(line, left, y); y += 15;
+  }
+  y += 5; divider();
+
   heading("STYLE SUMMARY");
   if (!model.styles.length) {
     doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.text("No commission-eligible sales were recorded for this recipient during this period.", left, y); y += 22;
@@ -126,4 +140,3 @@ export async function downloadRecipientStatementPdf(model: RecipientStatementMod
   doc.setFont("helvetica", "bold"); doc.setFontSize(14); doc.setTextColor(24, 62, 58); doc.text("TOTAL COMMISSION", left, y); doc.text(money(model.commission), right, y, { align: "right" });
   doc.save(content.filename);
 }
-

@@ -58,6 +58,21 @@ import {
   type RecipientStatementModel,
 } from "./statements";
 import { downloadRecipientStatementPdf } from "./statementPdf";
+import {
+  approveRecipientStatement,
+  canRevokeApproval,
+  discrepancy,
+  loadApprovedStatements,
+  paymentMethods,
+  paymentState,
+  paymentSummary,
+  recordStatementPayout,
+  revokeStatementApproval,
+  statementModelWithPayment,
+  validatePayment,
+  type ApprovedStatement,
+  type PaymentMethod,
+} from "./paymentTracking";
 const Analytics = lazy(() => import('./AnalyticsPage').then(module => ({default: module.Analytics})));
 const pages = [
   "Overview",
@@ -130,11 +145,13 @@ function RecipientStatementView({
   onClose,
   onDownload,
   downloading,
+  workflow,
 }: {
   model: RecipientStatementModel;
   onClose: () => void;
   onDownload: () => void;
   downloading: boolean;
+  workflow?: ReactNode;
 }) {
   return (
     <section className="recipient-statement-view" aria-label={`${model.recipientName} commission statement`}>
@@ -158,6 +175,7 @@ function RecipientStatementView({
           <span>This statement may change until the quarter is finalized.</span>
         </div>
       )}
+      {workflow}
       <div className="statement-hero-total"><span>TOTAL COMMISSION</span><strong>{money(model.commission)}</strong></div>
       <div className="statement-summary-grid">
         <span><b>Commission units</b><strong>{model.units}</strong></span>
@@ -354,6 +372,11 @@ export default function App() {
   const [quarterlyError, setQuarterlyError] = useState("");
   const [statementRecipientId, setStatementRecipientId] = useState<string | null>(null);
   const [statementPdfBusy, setStatementPdfBusy] = useState<string | null>(null);
+  const [approvedStatements, setApprovedStatements] = useState<ApprovedStatement[]>([]);
+  const [approvalConfirmId, setApprovalConfirmId] = useState<string | null>(null);
+  const [paymentStatementId, setPaymentStatementId] = useState<string | null>(null);
+  const [revokeConfirmId, setRevokeConfirmId] = useState<string | null>(null);
+  const [paymentBusy, setPaymentBusy] = useState(false);
   const [reviewRecipientId, setReviewRecipientId] = useState<string | null>(null);
   const [overviewRecipientId, setOverviewRecipientId] = useState<string | null>(null);
   useEffect(() => {
@@ -410,13 +433,23 @@ export default function App() {
   }, [adminStatus, page, reportYear, reportQuarter]);
   useEffect(() => {
     setStatementRecipientId(null);
+    setApprovalConfirmId(null);
+    setPaymentStatementId(null);
+    setRevokeConfirmId(null);
   }, [reportYear, reportQuarter]);
 
   async function refreshQuarterlyReport() {
     setQuarterlyLoading(true);
     setQuarterlyError("");
     try {
-      setQuarterlyReport(await loadQuarterlyReport(reportYear, reportQuarter));
+      const report = await loadQuarterlyReport(reportYear, reportQuarter);
+      setQuarterlyReport(report);
+      try {
+        setApprovedStatements(await loadApprovedStatements(reportYear, reportQuarter));
+      } catch (paymentError) {
+        setApprovedStatements([]);
+        setNotice((paymentError as Error).message);
+      }
     } catch (error) {
       setQuarterlyReport(null);
       setQuarterlyError((error as Error).message);
@@ -433,12 +466,65 @@ export default function App() {
   async function downloadStatement(recipient: QuarterlyRecipient) {
     setStatementPdfBusy(recipient.id);
     try {
-      await downloadRecipientStatementPdf(statementFor(recipient));
+      const approved = approvedStatements.find((statement) => statement.recipientId === recipient.id) ?? null;
+      await downloadRecipientStatementPdf(statementModelWithPayment(statementFor(recipient), approved));
       setNotice(`${recipient.name}'s statement PDF was downloaded.`);
     } catch (error) {
       setNotice((error as Error).message);
     } finally {
       setStatementPdfBusy(null);
+    }
+  }
+
+  async function approveStatement(recipient: QuarterlyRecipient) {
+    if (!quarterlyReport) return;
+    setPaymentBusy(true);
+    try {
+      await approveRecipientStatement(recipient, quarterlyReport, statementFor(recipient));
+      setApprovedStatements(await loadApprovedStatements(reportYear, reportQuarter));
+      setApprovalConfirmId(null);
+      setNotice(`${recipient.name}'s statement was approved and frozen for payment tracking.`);
+    } catch (error) {
+      setNotice((error as Error).message);
+    } finally {
+      setPaymentBusy(false);
+    }
+  }
+
+  async function saveStatementPayment(event: FormEvent<HTMLFormElement>, statement: ApprovedStatement) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    setPaymentBusy(true);
+    try {
+      const amount = validatePayment(statement, input(form, "amount"));
+      await recordStatementPayout(statement.id, {
+        amount,
+        paidOn: input(form, "paidOn"),
+        method: input(form, "method") as PaymentMethod,
+        reference: input(form, "reference"),
+        note: input(form, "note"),
+      });
+      setApprovedStatements(await loadApprovedStatements(reportYear, reportQuarter));
+      setPaymentStatementId(null);
+      setNotice(`Payment of ${money(amount)} was recorded for ${statement.recipientName}.`);
+    } catch (error) {
+      setNotice((error as Error).message);
+    } finally {
+      setPaymentBusy(false);
+    }
+  }
+
+  async function revokeApproval(statement: ApprovedStatement) {
+    setPaymentBusy(true);
+    try {
+      await revokeStatementApproval(statement.id);
+      setApprovedStatements(await loadApprovedStatements(reportYear, reportQuarter));
+      setRevokeConfirmId(null);
+      setNotice(`${statement.recipientName}'s approval was revoked. The audit history was preserved.`);
+    } catch (error) {
+      setNotice((error as Error).message);
+    } finally {
+      setPaymentBusy(false);
     }
   }
 
@@ -663,6 +749,19 @@ export default function App() {
       selectedStatementError = (error as Error).message;
     }
   }
+  const selectedApprovedStatement = selectedStatementRecipient
+    ? approvedStatements.find((statement) => statement.recipientId === selectedStatementRecipient.id) ?? null
+    : null;
+  const selectedPaymentState = paymentState(
+    selectedApprovedStatement,
+    quarterlyReport?.finalization?.status === "finalized",
+  );
+  const selectedDiscrepancy = selectedStatementRecipient
+    ? discrepancy(selectedApprovedStatement, selectedStatementRecipient.commission)
+    : null;
+  const quarterPaymentSummary = quarterlyReport?.finalization?.status === "finalized"
+    ? paymentSummary(approvedStatements, quarterlyReport.recipients.length)
+    : null;
   const recipientName = (id: string) =>
     frozen
       ? (period.recipientNames[id] ?? id)
@@ -1133,6 +1232,15 @@ export default function App() {
                 <small>Everyone is shown, including $0 amounts</small>
               </article>
             </div>
+            {quarterPaymentSummary && (
+              <button className="panel payment-overview" onClick={() => navigate("Statements")}>
+                <span><b>Q{reportQuarter} {reportYear} Payments</b><small>{quarterPaymentSummary.recipientCount} recipients · {quarterPaymentSummary.paidRecipients} paid · {quarterPaymentSummary.partialRecipients} partially paid · {quarterPaymentSummary.awaitingRecipients} awaiting payment</small></span>
+                <span><small>Total approved</small><b>{money(quarterPaymentSummary.totalApproved)}</b></span>
+                <span><small>Paid</small><b>{money(quarterPaymentSummary.paid)}</b></span>
+                <span><small>Remaining</small><b>{money(quarterPaymentSummary.remaining)}</b></span>
+                <span aria-hidden="true">→</span>
+              </button>
+            )}
             <div className="columns">
               <section className="panel">
                 <div className="section-title">
@@ -2700,7 +2808,10 @@ export default function App() {
                 <span>Total commissions</span>
                 <strong>{quarterlyReport?.amountsAvailable ? money(quarterlyReport.commissionTotal) : "Awaiting sync"}</strong>
               </div>
-              {!statementRecipientId && quarterlyReport?.recipients.map((recipient) => (
+              {!statementRecipientId && quarterlyReport?.recipients.map((recipient) => {
+                const approved = approvedStatements.find((statement) => statement.recipientId === recipient.id) ?? null;
+                const state = paymentState(approved, quarterlyReport.finalization?.status === "finalized");
+                return (
                 <article className="recipient-statement-card" key={recipient.id}>
                   <div className="summary-row">
                     <div className="avatar">{recipient.name.slice(0, 1).toUpperCase()}</div>
@@ -2710,22 +2821,54 @@ export default function App() {
                         {recipient.calculations.reduce((sum, calculation) => sum + calculation.units, 0)} commission unit{recipient.calculations.reduce((sum, calculation) => sum + calculation.units, 0) === 1 ? "" : "s"}
                         {recipient.blockedLines ? ` · ${recipient.blockedLines} need review` : ""}
                       </small>
+                      <Badge>{state.status}</Badge>
                     </div>
                     <strong>{quarterlyReport?.amountsAvailable ? money(recipient.commission) : 'Awaiting sync'}</strong>
                   </div>
+                  {approved && <div className="recipient-payment-summary"><span>Approved {money(approved.approvedTotal)}</span><span>Paid {money(state.paid)}</span><span>Remaining {money(state.remaining)}</span>{state.lastPayment && <span>Last payment {statementDate(state.lastPayment.paidOn)} · {state.lastPayment.method}</span>}</div>}
                   <div className="recipient-statement-actions no-print">
                     <button className="secondary" disabled={!quarterlyReport?.amountsAvailable} onClick={() => setStatementRecipientId(recipient.id)}>View statement</button>
                     <button disabled={!quarterlyReport?.amountsAvailable || statementPdfBusy === recipient.id} onClick={() => void downloadStatement(recipient)}>{statementPdfBusy === recipient.id ? "Creating PDF…" : "Download PDF"}</button>
                   </div>
                 </article>
-              ))}
+                );
+              })}
               {selectedStatementError && <div className="warning">{selectedStatementError}</div>}
               {selectedStatementModel && selectedStatementRecipient && (
                 <RecipientStatementView
-                  model={selectedStatementModel}
+                  model={statementModelWithPayment(selectedStatementModel, selectedApprovedStatement)}
                   onClose={() => setStatementRecipientId(null)}
                   onDownload={() => void downloadStatement(selectedStatementRecipient)}
                   downloading={statementPdfBusy === selectedStatementRecipient.id}
+                  workflow={(
+                    <section className="statement-workflow no-print" aria-label="Statement approval and payment">
+                      <div className="section-title">
+                        <div><h3>APPROVAL & PAYMENT</h3><p><Badge>{selectedPaymentState.status}</Badge></p></div>
+                        {selectedApprovedStatement && <div className="payment-totals"><span>Approved <b>{money(selectedApprovedStatement.approvedTotal)}</b></span><span>Paid <b>{money(selectedPaymentState.paid)}</b></span><span>Remaining <b>{money(selectedPaymentState.remaining)}</b></span></div>}
+                      </div>
+                      {selectedDiscrepancy && <div className="warning"><strong>Live commission data has changed since this statement was approved.</strong><p>Approved amount: {money(selectedDiscrepancy.approved)} · Current recalculated amount: {money(selectedDiscrepancy.current)} · Difference: {money(selectedDiscrepancy.difference)}</p></div>}
+                      {!selectedApprovedStatement && selectedStatementModel.status !== "FINAL" && <p className="muted">Not ready. The quarter must be finalized before this recipient statement can be approved.</p>}
+                      {!selectedApprovedStatement && selectedStatementModel.status === "FINAL" && selectedStatementRecipient.blockedLines > 0 && <p className="warning">Resolve this recipient's {selectedStatementRecipient.blockedLines} blocking commission issue{selectedStatementRecipient.blockedLines === 1 ? "" : "s"} before approval.</p>}
+                      {!selectedApprovedStatement && selectedStatementModel.status === "FINAL" && selectedStatementRecipient.blockedLines === 0 && approvalConfirmId !== selectedStatementRecipient.id && <button onClick={() => setApprovalConfirmId(selectedStatementRecipient.id)}>Approve statement</button>}
+                      {approvalConfirmId === selectedStatementRecipient.id && <div className="approval-confirm"><strong>Approve {selectedStatementRecipient.name}'s Q{reportQuarter} {reportYear} statement for {money(selectedStatementModel.commission)}?</strong><p>Approving freezes this statement amount for payment tracking.</p><div className="form-actions"><button className="secondary" onClick={() => setApprovalConfirmId(null)}>Cancel</button><button disabled={paymentBusy} onClick={() => void approveStatement(selectedStatementRecipient)}>{paymentBusy ? "Approving…" : "Approve statement"}</button></div></div>}
+                      {selectedApprovedStatement && (
+                        <>
+                          {selectedPaymentState.status !== "PAID" && paymentStatementId !== selectedApprovedStatement.id && <button onClick={() => setPaymentStatementId(selectedApprovedStatement.id)}>Mark as paid</button>}
+                          {paymentStatementId === selectedApprovedStatement.id && <form className="payment-form" onSubmit={(event) => void saveStatementPayment(event, selectedApprovedStatement)}>
+                            <Field label="Payment date"><input type="date" name="paidOn" defaultValue={today()} required /></Field>
+                            <Field label="Amount paid"><input type="number" name="amount" min="0.01" step="0.01" max={selectedPaymentState.remaining} defaultValue={selectedPaymentState.remaining} required /></Field>
+                            <Field label="Payment method"><select name="method" defaultValue="Zelle" required>{paymentMethods.map((method) => <option key={method}>{method}</option>)}</select></Field>
+                            <Field label="Reference / confirmation number"><input name="reference" /></Field>
+                            <Field label="Note"><input name="note" /></Field>
+                            <div className="form-actions"><button type="button" className="secondary" onClick={() => setPaymentStatementId(null)}>Cancel</button><button disabled={paymentBusy}>{paymentBusy ? "Saving…" : "Record payment"}</button></div>
+                          </form>}
+                          <section className="payment-history"><h3>PAYMENT HISTORY</h3>{selectedApprovedStatement.payouts.length ? selectedApprovedStatement.payouts.map((payout) => <div className="summary-row" key={payout.id}><span><b>{statementDate(payout.paidOn)}</b><small>{payout.method}{payout.reference ? ` · Reference: ${payout.reference}` : ""}{payout.note ? ` · ${payout.note}` : ""}</small></span><strong>{money(payout.amount)}</strong></div>) : <p className="muted">No payments recorded yet.</p>}</section>
+                          {canRevokeApproval(selectedApprovedStatement) && revokeConfirmId !== selectedApprovedStatement.id && <button className="text-button" onClick={() => setRevokeConfirmId(selectedApprovedStatement.id)}>Revoke approval</button>}
+                          {revokeConfirmId === selectedApprovedStatement.id && <div className="approval-confirm"><strong>Revoke this statement approval?</strong><p>The approved snapshot and audit history will be preserved. You can approve a new snapshot afterward.</p><div className="form-actions"><button className="secondary" onClick={() => setRevokeConfirmId(null)}>Cancel</button><button disabled={paymentBusy} onClick={() => void revokeApproval(selectedApprovedStatement)}>{paymentBusy ? "Revoking…" : "Revoke approval"}</button></div></div>}
+                        </>
+                      )}
+                    </section>
+                  )}
                 />
               )}
               {!quarterlyLoading && quarterlyReport?.recipients.length === 0 && (

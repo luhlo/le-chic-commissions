@@ -54,6 +54,7 @@ export interface QuarterlyReport {
 }
 
 export interface QuarterFinalization {
+  id: string;
   year: number;
   quarter: number;
   quarter_start: string;

@@ -27,6 +27,16 @@ export interface RecipientStatementModel {
   commission: string;
   styles: StatementStyleRow[];
   calculations: Calculation[];
+  payment?: RecipientStatementPayment;
+}
+
+export interface RecipientStatementPayment {
+  status: "Not approved" | "Approved" | "Partially paid" | "Paid";
+  paid: string;
+  remaining: string;
+  paidDate: string | null;
+  method: string | null;
+  reference: string | null;
 }
 
 export const statementCostLabels: Record<CostKey, string> = {
@@ -138,4 +148,3 @@ export function statementDate(value: string, full = false) {
     year: "numeric",
   }).format(new Date(`${value}T00:00:00Z`));
 }
-
