@@ -1064,6 +1064,42 @@ details > summary {
   min-height: 30px;
   font-weight: 600;
 }
+.coverage-disclosure > details > summary {
+  list-style: none;
+}
+.coverage-disclosure > details > summary::-webkit-details-marker {
+  display: none;
+}
+.coverage-disclosure-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+}
+.coverage-disclosure-summary > span:first-child {
+  display: grid;
+  gap: 6px;
+}
+.coverage-disclosure-summary strong {
+  color: #173f3b;
+  font-size: 1.25rem;
+}
+.coverage-disclosure-summary small {
+  color: #667c76;
+  font-weight: 400;
+}
+.coverage-disclosure-caret {
+  color: #315f51;
+  font-size: 1.4rem;
+  line-height: 1;
+  transition: transform 160ms ease;
+}
+.coverage-disclosure details[open] .coverage-disclosure-caret {
+  transform: rotate(180deg);
+}
+.coverage-disclosure-body {
+  margin-top: 22px;
+}
 details > .form-grid {
   margin-top: 22px;
 }
@@ -1153,6 +1189,12 @@ button.compact { width: auto; padding: 9px 13px; font-size: .82rem; }
   }
 }
 @media (max-width: 800px) {
+  .coverage-disclosure-summary {
+    gap: 12px;
+  }
+  .coverage-disclosure-summary strong {
+    font-size: 1.05rem;
+  }
   .app {
     display: block;
   }

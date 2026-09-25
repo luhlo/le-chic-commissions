@@ -114,6 +114,43 @@ function finalizationLabel(report: QuarterlyReport | null) {
   if(finalization.status==='final_sync_due') return `Final sync scheduled for ${reportDate(finalization.scheduled_final_sync_date)}`;
   return `Provisional · synced through ${reportDate(report?.provisionalThrough)}`;
 }
+export function statementCoverageHasProblem(report: QuarterlyReport | null, error: string) {
+  if (error || !report || !report.amountsAvailable) return true;
+  const coverage = report.coverage ?? [];
+  const hasEveryChannel = ["shopify", "etsy", "faire"].every((channel) =>
+    coverage.some((row) => row.channel === channel),
+  );
+  const hasSyncIssue = coverage.some(
+    (row) =>
+      row.failed_orders > 0 ||
+      row.sync_status === "failed" ||
+      row.sync_status === "partial" ||
+      row.sync_status === "retry_needed",
+  );
+  const closedPeriodIncomplete =
+    report.endsOn < todayDate() && !report.coverageComplete;
+  return (
+    !hasEveryChannel ||
+    hasSyncIssue ||
+    closedPeriodIncomplete ||
+    report.finalization?.status === "retry_needed"
+  );
+}
+export function statementCoverageSummary(report: QuarterlyReport | null, error: string) {
+  if (error || report?.finalization?.status === "retry_needed")
+    return "Sync issue · review coverage details";
+  if (statementCoverageHasProblem(report, error))
+    return "Coverage incomplete · review details";
+  const through =
+    report?.provisionalThrough ??
+    report?.coverage
+      ?.map((row) => row.coverage_through)
+      .filter((value): value is string => Boolean(value))
+      .sort()[0];
+  return through
+    ? `All channels synced through ${reportDate(through)}`
+    : "All channels are synced";
+}
 function calculationFormula(c: Calculation) {
   const rate = c.ruleSnapshot.rate;
   if (c.ruleSnapshot.kind === "fixed")
@@ -370,6 +407,7 @@ export default function App() {
     useState<QuarterlyReport | null>(null);
   const [quarterlyLoading, setQuarterlyLoading] = useState(false);
   const [quarterlyError, setQuarterlyError] = useState("");
+  const [coverageDetailsOpen, setCoverageDetailsOpen] = useState(true);
   const [statementRecipientId, setStatementRecipientId] = useState<string | null>(null);
   const [statementPdfBusy, setStatementPdfBusy] = useState<string | null>(null);
   const [approvedStatements, setApprovedStatements] = useState<ApprovedStatement[]>([]);
@@ -437,6 +475,12 @@ export default function App() {
     setPaymentStatementId(null);
     setRevokeConfirmId(null);
   }, [reportYear, reportQuarter]);
+  useEffect(() => {
+    if (page === "Statements" && !quarterlyLoading)
+      setCoverageDetailsOpen(
+        statementCoverageHasProblem(quarterlyReport, quarterlyError),
+      );
+  }, [page, reportYear, reportQuarter, quarterlyLoading, quarterlyReport, quarterlyError]);
 
   async function refreshQuarterlyReport() {
     setQuarterlyLoading(true);
@@ -1086,6 +1130,30 @@ export default function App() {
       );
     });
   }
+  function renderCoverageDetails() {
+    return <>
+      <p>Official quarter: {reportDate(quarterRange(reportYear,reportQuarter).startsOn)} – {reportDate(quarterRange(reportYear,reportQuarter).endsOn)}</p>
+      {quarterlyError && <div className="warning">{quarterlyError}</div>}
+      {quarterlyReport?.finalization?.status==='open' && quarterlyReport.provisional && <div className="warning">Amounts are provisional through {reportDate(quarterlyReport.provisionalThrough)}. Newer sales may not yet be included. Sync the current period to bring every channel up to date.</div>}
+      {quarterlyReport?.finalization?.status==='preliminary_sync_due' && <div className="warning">Quarter closed · Preliminary sync scheduled for {reportDate(quarterlyReport.finalization.preliminary_sync_date)}. The current amount remains visible.</div>}
+      {quarterlyReport?.finalization?.status==='preliminary_sync_complete' && <div className="warning">Preliminary quarter sync complete · Final sync scheduled for {reportDate(quarterlyReport.finalization.scheduled_final_sync_date)}. Amounts remain provisional.</div>}
+      {quarterlyReport?.finalization?.status==='final_sync_due' && <div className="warning">Final quarter sync is due and will run automatically.</div>}
+      {quarterlyReport?.finalization?.status==='finalizing' && <div className="warning">{quarterlyReport.finalization.retry_stage==='preliminary'?'Preliminary':'Final'} quarter sync in progress. Provider progress is saved and will resume automatically if interrupted.</div>}
+      {quarterlyReport?.finalization?.status==='retry_needed' && <div className="warning">{quarterlyReport.finalization.retry_stage==='preliminary'?'Preliminary':'Final'} quarter sync needs retry. It will retry automatically on the next scheduled run; you can also sync the provider rows below.</div>}
+      {quarterlyReport?.finalization?.status==='finalized' && <p><strong>Finalized</strong> {new Date(quarterlyReport.finalization.finalized_at!).toLocaleString()}</p>}
+      {!quarterlyReport?.coverageComplete && !quarterlyReport?.amountsAvailable && <div className="warning">There is not enough verified imported coverage to calculate this period reliably. Missing channels: {quarterlyReport?.coverage?.filter(c=>!c.complete).map(c=>platformLabel(c.channel as Line['channel'])).join(', ') || 'coverage not yet verified'}.</div>}
+      {quarterlyReport?.coverageComplete && <p>All channels completely cover this reporting period. {quarterlyReport.endsOn >= todayDate() ? 'This quarter is still open; amounts remain provisional until it closes.' : 'Review unmatched products and missing costs before payment.'}</p>}
+      {quarterlyReport?.coverage?.map(c=><div className="summary-row" key={c.channel}>
+        <div className="grow"><strong>{platformLabel(c.channel as Line['channel'])} — Q{reportQuarter} {reportYear}</strong>
+          <p>Quarter: {reportDate(quarterRange(reportYear,reportQuarter).startsOn)} – {reportDate(quarterRange(reportYear,reportQuarter).endsOn)}</p>
+          <p>{c.complete ? 'Complete' : `Coverage pending · Last run: ${c.sync_status}`}</p>
+          <p>Sync coverage through: {reportDate(c.coverage_through)} · Latest order: {reportDate(c.latest)}</p>
+          <small>{c.order_count} orders in period · First order: {reportDate(c.earliest)} · Last successful sync: {c.last_success ? new Date(c.last_success).toLocaleString() : 'none'} · {c.failed_orders} failed orders</small>
+        </div>
+        <button disabled={shopifyBusy || etsyBusy || faireBusy || requestedSync().startDate>requestedSync().endDate} onClick={()=>void (c.channel==='shopify'?runShopify('sync'):c.channel==='etsy'?runEtsy('sync'):runFaire('sync'))}>Sync {platformLabel(c.channel as Line['channel'])} period</button>
+      </div>)}
+    </>;
+  }
   return (
     <div className="app">
       <aside>
@@ -1474,28 +1542,29 @@ export default function App() {
         )}
         {page === "Analytics" && <Suspense fallback={<div className="panel empty">Loading analytics…</div>}><Analytics designs={cloudDesigns} /></Suspense>}
         {['Overview','Statements','Orders & imports','Connection'].includes(page) && (
-          <section className="panel">
-            <h2>Commission data coverage · Q{reportQuarter} {reportYear}</h2>
-            <p>Official quarter: {reportDate(quarterRange(reportYear,reportQuarter).startsOn)} – {reportDate(quarterRange(reportYear,reportQuarter).endsOn)}</p>
-            {quarterlyError && <div className="warning">{quarterlyError}</div>}
-            {quarterlyReport?.finalization?.status==='open' && quarterlyReport.provisional && <div className="warning">Amounts are provisional through {reportDate(quarterlyReport.provisionalThrough)}. Newer sales may not yet be included. Sync the current period to bring every channel up to date.</div>}
-            {quarterlyReport?.finalization?.status==='preliminary_sync_due' && <div className="warning">Quarter closed · Preliminary sync scheduled for {reportDate(quarterlyReport.finalization.preliminary_sync_date)}. The current amount remains visible.</div>}
-            {quarterlyReport?.finalization?.status==='preliminary_sync_complete' && <div className="warning">Preliminary quarter sync complete · Final sync scheduled for {reportDate(quarterlyReport.finalization.scheduled_final_sync_date)}. Amounts remain provisional.</div>}
-            {quarterlyReport?.finalization?.status==='final_sync_due' && <div className="warning">Final quarter sync is due and will run automatically.</div>}
-            {quarterlyReport?.finalization?.status==='finalizing' && <div className="warning">{quarterlyReport.finalization.retry_stage==='preliminary'?'Preliminary':'Final'} quarter sync in progress. Provider progress is saved and will resume automatically if interrupted.</div>}
-            {quarterlyReport?.finalization?.status==='retry_needed' && <div className="warning">{quarterlyReport.finalization.retry_stage==='preliminary'?'Preliminary':'Final'} quarter sync needs retry. It will retry automatically on the next scheduled run; you can also sync the provider rows below.</div>}
-            {quarterlyReport?.finalization?.status==='finalized' && <p><strong>Finalized</strong> {new Date(quarterlyReport.finalization.finalized_at!).toLocaleString()}</p>}
-            {!quarterlyReport?.coverageComplete && !quarterlyReport?.amountsAvailable && <div className="warning">There is not enough verified imported coverage to calculate this period reliably. Missing channels: {quarterlyReport?.coverage?.filter(c=>!c.complete).map(c=>platformLabel(c.channel as Line['channel'])).join(', ') || 'coverage not yet verified'}.</div>}
-            {quarterlyReport?.coverageComplete && <p>All channels completely cover this reporting period. {quarterlyReport.endsOn >= todayDate() ? 'This quarter is still open; amounts remain provisional until it closes.' : 'Review unmatched products and missing costs before payment.'}</p>}
-            {quarterlyReport?.coverage?.map(c=><div className="summary-row" key={c.channel}>
-              <div className="grow"><strong>{platformLabel(c.channel as Line['channel'])} — Q{reportQuarter} {reportYear}</strong>
-                <p>Quarter: {reportDate(quarterRange(reportYear,reportQuarter).startsOn)} – {reportDate(quarterRange(reportYear,reportQuarter).endsOn)}</p>
-                <p>{c.complete ? 'Complete' : `Coverage pending · Last run: ${c.sync_status}`}</p>
-                <p>Sync coverage through: {reportDate(c.coverage_through)} · Latest order: {reportDate(c.latest)}</p>
-                <small>{c.order_count} orders in period · First order: {reportDate(c.earliest)} · Last successful sync: {c.last_success ? new Date(c.last_success).toLocaleString() : 'none'} · {c.failed_orders} failed orders</small>
-              </div>
-              <button disabled={shopifyBusy || etsyBusy || faireBusy || requestedSync().startDate>requestedSync().endDate} onClick={()=>void (c.channel==='shopify'?runShopify('sync'):c.channel==='etsy'?runEtsy('sync'):runFaire('sync'))}>Sync {platformLabel(c.channel as Line['channel'])} period</button>
-            </div>)}
+          <section className={`panel${page === "Statements" ? " coverage-disclosure" : ""}`}>
+            {page === "Statements" ? (
+              <details
+                open={coverageDetailsOpen}
+                onToggle={(event) =>
+                  setCoverageDetailsOpen(event.currentTarget.open)
+                }
+              >
+                <summary className="coverage-disclosure-summary">
+                  <span>
+                    <strong>Commission data coverage · Q{reportQuarter} {reportYear}</strong>
+                    <small>{statementCoverageSummary(quarterlyReport, quarterlyError)}</small>
+                  </span>
+                  <span className="coverage-disclosure-caret" aria-hidden="true">⌄</span>
+                </summary>
+                <div className="coverage-disclosure-body">{renderCoverageDetails()}</div>
+              </details>
+            ) : (
+              <>
+                <h2>Commission data coverage · Q{reportQuarter} {reportYear}</h2>
+                {renderCoverageDetails()}
+              </>
+            )}
           </section>
         )}
         {sessionEmail && <HistoricalBackfill user={sessionEmail} show={['Overview','Statements','Orders & imports','Connection'].includes(page)} currentBusy={shopifyBusy || etsyBusy || faireBusy} onComplete={async()=>{await reloadCloudData();await refreshQuarterlyReport();}} />}
